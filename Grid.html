@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chaotic Generative Grid - Chroma Key Transition</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+
+        #ui-panel {
+            position: fixed;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.98);
+            backdrop-filter: blur(15px);
+            padding: 25px; border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+            display: none; z-index: 100; width: 350px;
+            max-height: 85vh; overflow-y: auto; border: 1px solid #ddd;
+        }
+
+        .section { margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
+        h4 { margin: 0 0 10px 0; color: #444; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; }
+        label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 0.8rem; color: #555; }
+        
+        input[type="range"], input[type="number"], select { 
+            width: 100%; margin-bottom: 10px; padding: 6px; border-radius: 5px; border: 1px solid #ccc; box-sizing: border-box;
+        }
+
+        #color-list { 
+            display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; 
+            max-height: 150px; overflow-y: auto; padding-right: 5px;
+        }
+        
+        #color-list::-webkit-scrollbar { width: 6px; }
+        #color-list::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+
+        .color-tag { 
+            padding: 4px 8px; border-radius: 12px; font-size: 0.7rem; 
+            color: white; display: flex; align-items: center; cursor: pointer;
+            text-shadow: 0px 1px 2px rgba(0,0,0,0.4); 
+        }
+        .color-tag span { margin-left: 6px; font-weight: bold; opacity: 0.8; }
+
+        .flex-row { display: flex; gap: 8px; align-items: center; }
+        .hint { font-size: 0.75rem; color: #999; text-align: center; }
+        .checkbox-row { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; cursor: pointer; font-size: 0.85rem; }
+        .sub-control { padding-left: 24px; margin-bottom: 10px; border-left: 2px solid #eee; margin-left: 6px; }
+    </style>
+</head>
+<body>
+
+<canvas id="gridCanvas"></canvas>
+
+<div id="ui-panel">
+    <div class="section">
+        <h4>Palette (7 Brand Colors)</h4>
+        <div id="color-list"></div>
+        <div class="flex-row">
+            <input type="color" id="new-color" value="#3b82f6" style="height:35px;">
+            <button id="add-color-btn" style="padding: 8px 12px; border-radius: 5px; border: 1px solid #ccc; background: #eee; cursor: pointer;">Add</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <h4>Movement & Density</h4>
+        <label>Glide Speed</label>
+        <input type="range" id="speed-slider" min="0.1" max="5" step="0.1" value="1">
+        <label>Tile Density</label>
+        <input type="range" id="density-slider" min="1" max="100" value="15">
+    </div>
+
+    <div class="section">
+        <h4>Randomness (Chaos)</h4>
+        <label>Duration Randomness (0-100%)</label>
+        <input type="range" id="random-dur" min="0" max="100" value="50">
+        <label>Delay Randomness (0-100%)</label>
+        <input type="range" id="random-delay" min="0" max="100" value="50">
+    </div>
+
+    <div class="section">
+        <h4>Effects & Scope</h4>
+        <select id="effect-scope">
+            <option value="individual">Per Tile (Individual)</option>
+            <option value="color">Per Color Group</option>
+            <option value="joined">All Tiles (Joined)</option>
+        </select>
+        
+        <label class="checkbox-row"><input type="checkbox" id="pulse-toggle"> Pulse Effect</label>
+        <div class="sub-control">
+            <label style="font-size: 0.7rem; color: #888;">Pulse Cycle (Seconds)</label>
+            <input type="range" id="pulse-duration" min="0.1" max="10" step="0.1" value="2.0">
+        </div>
+
+        <label class="checkbox-row"><input type="checkbox" id="saturate-toggle"> Saturation Cycle</label>
+        <div class="sub-control">
+            <label style="font-size: 0.7rem; color: #888;">Sat. Cycle (Seconds)</label>
+            <input type="range" id="saturate-duration" min="0.1" max="10" step="0.1" value="4.0">
+        </div>
+    </div>
+
+    <p class="hint">Press <strong>SPACE</strong> to hide menu<br>Press <strong>UP ARROW</strong> for Chroma Green<br>Press <strong>DOWN ARROW</strong> to restore colors</p>
+</div>
+
+<script>
+    const canvas = document.getElementById('gridCanvas');
+    const ctx = canvas.getContext('2d');
+    const ui = document.getElementById('ui-panel');
+
+    let config = {
+        tileSize: 50,
+        speed: 1,
+        density: 0.15,
+        colors: [
+            '#0f81c2', '#55803a', '#91288f', '#f37424', 
+            '#bd202e', '#e0ae25', '#66b0dd'
+        ],
+        pulse: false,
+        pulseDur: 2.0,
+        saturate: false,
+        saturateDur: 4.0,
+        scope: 'individual',
+        randDur: 0.5,   
+        randDelay: 0.5, 
+        offset: { x: 0, y: 0 }
+    };
+
+    let activeTiles = new Map();
+    let colorData = new Map(); 
+
+    // Chroma key transition states
+    let targetChroma = false;
+    let chromaTransitionStart = 0;
+    const chromaGreen = '#00ff00';
+
+    function hexToRgb(hex) {
+        var shorthandRegex = /^#?([a-f\d])([a-f\d])([a-f\d])$/i;
+        hex = hex.replace(shorthandRegex, function(m, r, g, b) { return r + r + g + g + b + b; });
+        var result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+            r: parseInt(result[1], 16),
+            g: parseInt(result[2], 16),
+            b: parseInt(result[3], 16)
+        } : { r: 255, g: 255, b: 255 }; 
+    }
+
+    function lerpColor(c1, c2, t) {
+        const color1 = hexToRgb(c1);
+        const color2 = hexToRgb(c2);
+        const r = Math.round(color1.r + (color2.r - color1.r) * t);
+        const g = Math.round(color1.g + (color2.g - color1.g) * t);
+        const b = Math.round(color1.b + (color2.b - color1.b) * t);
+        return `#${(1 << 24 | r << 16 | g << 8 | b).toString(16).slice(1)}`;
+    }
+
+    function resize() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function updateColorPalette() {
+        const container = document.getElementById('color-list');
+        container.innerHTML = '';
+        colorData.clear();
+        config.colors.forEach((color, i) => {
+            colorData.set(color, {
+                durMult: 1 + (Math.random() - 0.5) * 2 * config.randDur,
+                delay: Math.random() * 10 * config.randDelay
+            });
+
+            const tag = document.createElement('div');
+            tag.className = 'color-tag';
+            tag.style.backgroundColor = color;
+            tag.innerHTML = `${color} <span>&times;</span>`;
+            tag.onclick = () => { 
+                config.colors.splice(i, 1); 
+                updateColorPalette(); 
+                activeTiles.clear(); 
+            };
+            container.appendChild(tag);
+        });
+    }
+
+    function animate() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        config.offset.x += config.speed;
+        config.offset.y -= config.speed;
+
+        const startX = Math.floor(-config.offset.x / config.tileSize) - 1;
+        const endX = startX + Math.ceil(canvas.width / config.tileSize) + 2;
+        const startY = Math.floor(-config.offset.y / config.tileSize) - 1;
+        const endY = startY + Math.ceil(canvas.height / config.tileSize) + 2;
+
+        const time = Date.now() / 1000;
+        const elapsedSinceTransition = (Date.now() - chromaTransitionStart) / 1000;
+
+        for (let x = startX; x <= endX; x++) {
+            for (let y = startY; y <= endY; y++) {
+                const screenX = x * config.tileSize + config.offset.x;
+                const screenY = y * config.tileSize + config.offset.y;
+                const key = `${x},${y}`;
+
+                if (!activeTiles.has(key)) {
+                    if (Math.random() < config.density) {
+                        const col = config.colors[Math.floor(Math.random() * config.colors.length)];
+                        activeTiles.set(key, {
+                            color: col,
+                            durMult: 1 + (Math.random() - 0.5) * 2 * config.randDur,
+                            delay: Math.random() * 10 * config.randDelay
+                        });
+                    } else {
+                        activeTiles.set(key, null);
+                    }
+                }
+
+                const tile = activeTiles.get(key);
+
+                // Calculate random stagger based on fixed coordinates
+                const staggerDelay = Math.abs(Math.sin(x * 12.9898 + y * 78.233)) * 1.5;
+                
+                let transitionProgress = 0;
+                if (chromaTransitionStart > 0) {
+                    transitionProgress = Math.max(0, Math.min(1, (elapsedSinceTransition - staggerDelay) / 0.5));
+                }
+
+                let baseColor = tile ? tile.color : '#ffffff';
+                let currentColor = baseColor;
+
+                if (chromaTransitionStart > 0) {
+                    if (targetChroma) {
+                        currentColor = lerpColor(baseColor, chromaGreen, transitionProgress);
+                    } else {
+                        currentColor = lerpColor(chromaGreen, baseColor, transitionProgress);
+                    }
+                }
+
+                ctx.save();
+                if (tile) {
+                    let dPulse = config.pulseDur;
+                    let dSat = config.saturateDur;
+                    let delay = 0;
+
+                    if (config.scope === 'individual') {
+                        dPulse *= tile.durMult;
+                        dSat *= tile.durMult;
+                        delay = tile.delay;
+                    } else if (config.scope === 'color') {
+                        const cData = colorData.get(tile.color);
+                        dPulse *= cData.durMult;
+                        dSat *= cData.durMult;
+                        delay = cData.delay;
+                    }
+
+                    const phasePulse = ((time + delay) % dPulse) / dPulse;
+                    const wavePulse = Math.sin(phasePulse * Math.PI * 2) * 0.5 + 0.5;
+                    const phaseSat = ((time + delay) % dSat) / dSat;
+                    const waveSat = Math.sin(phaseSat * Math.PI * 2) * 0.5 + 0.5;
+
+                    if (config.saturate) ctx.filter = `saturate(${waveSat * 200}%)`;
+                    
+                    let alpha = config.pulse ? (0.1 + wavePulse * 0.9) : 1.0;
+                    
+                    // Override alpha effects when transitioning to solid green screen
+                    if (targetChroma) {
+                        alpha = alpha + (1.0 - alpha) * transitionProgress;
+                    } else if (chromaTransitionStart > 0) {
+                        alpha = 1.0 + (alpha - 1.0) * transitionProgress;
+                    }
+
+                    ctx.globalAlpha = alpha;
+                } else {
+                    ctx.globalAlpha = 1.0;
+                }
+
+                ctx.fillStyle = currentColor;
+                ctx.fillRect(screenX, screenY, config.tileSize, config.tileSize);
+                ctx.restore();
+
+                // Fade stroke color to green so the entire background flattens out
+                let strokeColor = '#f4f4f4';
+                if (chromaTransitionStart > 0) {
+                    if (targetChroma) {
+                        strokeColor = lerpColor('#f4f4f4', chromaGreen, transitionProgress);
+                    } else {
+                        strokeColor = lerpColor(chromaGreen, '#f4f4f4', transitionProgress);
+                    }
+                }
+
+                ctx.strokeStyle = strokeColor;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(screenX, screenY, config.tileSize, config.tileSize);
+            }
+        }
+
+        if (activeTiles.size > 5000) {
+            for (const [key] of activeTiles) {
+                const [tx, ty] = key.split(',').map(Number);
+                if (tx < startX - 5 || tx > endX + 5 || ty < startY - 5 || ty > endY + 5) {
+                    activeTiles.delete(key);
+                }
+            }
+        }
+
+        requestAnimationFrame(animate);
+    }
+
+    // Input Listeners
+    window.addEventListener('keydown', (e) => { 
+        if (e.code === 'Space') {
+            ui.style.display = ui.style.display === 'block' ? 'none' : 'block'; 
+        }
+        if (e.code === 'ArrowUp' && !targetChroma) {
+            targetChroma = true;
+            chromaTransitionStart = Date.now();
+        }
+        if (e.code === 'ArrowDown' && targetChroma) {
+            targetChroma = false;
+            chromaTransitionStart = Date.now();
+        }
+    });
+    
+    document.getElementById('add-color-btn').onclick = () => {
+        config.colors.push(document.getElementById('new-color').value);
+        updateColorPalette();
+        activeTiles.clear();
+    };
+
+    document.getElementById('speed-slider').oninput = (e) => config.speed = parseFloat(e.target.value);
+    document.getElementById('density-slider').oninput = (e) => { config.density = e.target.value / 100; activeTiles.clear(); };
+    
+    document.getElementById('pulse-duration').oninput = (e) => config.pulseDur = parseFloat(e.target.value);
+    document.getElementById('saturate-duration').oninput = (e) => config.saturateDur = parseFloat(e.target.value);
+    
+    document.getElementById('random-dur').oninput = (e) => { config.randDur = e.target.value / 100; activeTiles.clear(); updateColorPalette(); };
+    document.getElementById('random-delay').oninput = (e) => { config.randDelay = e.target.value / 100; activeTiles.clear(); updateColorPalette(); };
+    document.getElementById('effect-scope').onchange = (e) => config.scope = e.target.value;
+    document.getElementById('pulse-toggle').onchange = (e) => config.pulse = e.target.checked;
+    document.getElementById('saturate-toggle').onchange = (e) => config.saturate = e.target.checked;
+
+    updateColorPalette();
+    animate();
+</script>
+
+</body>
+</html>
